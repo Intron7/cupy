@@ -69,6 +69,34 @@ def get_index_dtype(arrays=(), maxval=None, check_contents=False):
     return dtype
 
 
+def get_indptr_dtype(nnz):
+    """Optimal dtype for indptr based on the number of nonzeros.
+
+    indptr values range from 0 to nnz.
+    cuSPARSE supports CUSPARSE_INDEX_16U for uint16,
+    so we use uint16 when nnz fits.
+    """
+    if nnz <= numpy.iinfo(numpy.uint16).max:
+        return cupy.dtype(cupy.uint16)
+    if nnz <= cupy.iinfo(cupy.int32).max:
+        return cupy.dtype(cupy.int32)
+    return cupy.dtype(cupy.int64)
+
+
+def get_indices_dtype(minor_dim):
+    """Optimal dtype for indices based on the minor axis dimension.
+
+    indices values range from 0 to minor_dim - 1.
+    cuSPARSE supports CUSPARSE_INDEX_16U for uint16 indices,
+    so we use uint16 when the minor dimension fits.
+    """
+    if minor_dim <= numpy.iinfo(numpy.uint16).max:
+        return cupy.dtype(cupy.uint16)
+    if minor_dim <= cupy.iinfo(cupy.int32).max:
+        return cupy.dtype(cupy.int32)
+    return cupy.dtype(cupy.int64)
+
+
 def validateaxis(axis):
     if axis is not None:
         # In NumPy, you can pass in tuples for 'axis', but they are

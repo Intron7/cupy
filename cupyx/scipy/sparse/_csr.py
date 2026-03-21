@@ -269,9 +269,10 @@ class csr_matrix(_compressed._compressed_sparse_matrix):
             return cupy.empty(0, dtype=self.dtype)
         self.sum_duplicates()
         y = cupy.empty(ylen, dtype=self.dtype)
-        idx_dtype = self.indptr.dtype
-        _cupy_csr_diagonal()(idx_dtype.type(k),
-                             idx_dtype.type(rows), idx_dtype.type(cols),
+        ptr_dtype = self.indptr.dtype
+        idx_dtype = self.indices.dtype
+        _cupy_csr_diagonal()(ptr_dtype.type(k),
+                             ptr_dtype.type(rows), idx_dtype.type(cols),
                              self.data, self.indptr, self.indices, y)
         return y
 
@@ -279,8 +280,8 @@ class csr_matrix(_compressed._compressed_sparse_matrix):
         """Removes zero entries in place."""
         from cupyx import cusparse
 
-        if self.indices.dtype == cupy.int64:
-            # TODO(cuSPARSE): remove when csr2csr_compress supports int64
+        if self.indices.dtype != cupy.int32 or self.indptr.dtype != cupy.int32:
+            # TODO(cuSPARSE): remove when csr2csr_compress supports non-int32
             mask = self.data != 0
             if mask.all():
                 return
@@ -689,13 +690,13 @@ __device__ inline void _atomic_add_one<long long>(long long* addr) {
 '''
 
 _FIND_INDEX_HOLDING_COL_IN_ROW_ = '''
-template<typename I>
-__device__ inline I find_index_holding_col_in_row(
-        I row, I col, const I *indptr, const I *indices) {
-    I j_min = indptr[row];
-    I j_max = indptr[row+1] - 1;
+template<typename P, typename I>
+__device__ inline P find_index_holding_col_in_row(
+        P row, I col, const P *indptr, const I *indices) {
+    P j_min = indptr[row];
+    P j_max = indptr[row+1] - 1;
     while (j_min <= j_max) {
-        I j = (j_min + j_max) / 2;
+        P j = (j_min + j_max) / 2;
         I j_col = indices[j];
         if (j_col == col) {
             return j;
@@ -705,7 +706,7 @@ __device__ inline I find_index_holding_col_in_row(
             j_max = j - 1;
         }
     }
-    return (I)(-1);
+    return (P)(-1);
 }
 '''
 
@@ -1260,18 +1261,18 @@ def cupy_dense2csr_step2():
 @cupy._util.memoize(for_each_device=True)
 def _cupy_csr_diagonal():
     return cupy.ElementwiseKernel(
-        'I k, I rows, I cols, '
-        'raw T data, raw I indptr, raw I indices',
+        'P k, P rows, I cols, '
+        'raw T data, raw P indptr, raw I indices',
         'T y',
         '''
-        I row = (I)i;
+        P row = (P)i;
         I col = (I)i;
-        if (k < 0) row -= (I)k;
+        if (k < 0) row -= (P)k;
         if (k > 0) col += (I)k;
         if (row >= rows || col >= cols) return;
-        I j = find_index_holding_col_in_row(row, col,
+        P j = find_index_holding_col_in_row(row, col,
             &(indptr[0]), &(indices[0]));
-        if (j >= (I)0) {
+        if (j >= (P)0) {
             y = data[j];
         } else {
             y = static_cast<T>(0);

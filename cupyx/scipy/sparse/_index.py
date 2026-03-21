@@ -96,16 +96,16 @@ def _get_csr_submatrix_minor_axis(Ax, Aj, Ap, start, stop):
 
 
 _csr_row_index_ker = _core.ElementwiseKernel(
-    'I out_rows, raw I rows, '
-    'raw I Ap, raw I Aj, raw T Ax, raw I Bp',
+    'P out_rows, raw P rows, '
+    'raw P Ap, raw I Aj, raw T Ax, raw P Bp',
     'I Bj, T Bx',
     '''
-    const I row = rows[out_rows];
+    const P row = rows[out_rows];
 
     // Look up starting offset
-    const I starting_output_offset = Bp[out_rows];
-    const I output_offset = i - starting_output_offset;
-    const I starting_input_offset = Ap[row];
+    const P starting_output_offset = Bp[out_rows];
+    const P output_offset = i - starting_output_offset;
+    const P starting_input_offset = Ap[row];
 
     Bj = Aj[starting_input_offset + output_offset];
     Bx = Ax[starting_input_offset + output_offset];
@@ -124,8 +124,8 @@ def _csr_row_index(Ax, Aj, Ap, rows):
         Bj (cupy.ndarray): indices array of output sparse matrix
         Bp (cupy.ndarray): indptr array for output sparse matrix
     """
-    # Ensure rows has the same dtype as Ap/Aj so the kernel type parameter I
-    # is consistent across all array arguments.
+    # Ensure rows has the same dtype as Ap so the kernel type parameter P
+    # is consistent across indptr-related arguments.
     rows = rows.astype(Ap.dtype, copy=False)
     row_nnz = cupy.diff(Ap)
     Bp = cupy.empty(rows.size + 1, dtype=Ap.dtype)
@@ -163,42 +163,48 @@ def _csr_indptr_to_coo_rows(nnz, Bp):
     return out_rows
 
 
-def _select_last_indices(i, j, x, idx_dtype):
+def _select_last_indices(i, j, x, indptr_dtype, indices_dtype):
     """Find the unique indices for each row and keep only the last"""
-    i = cupy.asarray(i, dtype=idx_dtype)
-    j = cupy.asarray(j, dtype=idx_dtype)
+    i = cupy.asarray(i, dtype=indptr_dtype)
+    j = cupy.asarray(j, dtype=indices_dtype)
 
-    stacked = cupy.stack([j, i])
-    order = cupy.lexsort(stacked).astype(idx_dtype)
+    # lexsort needs compatible dtypes; promote to common type for sorting
+    common_dtype = cupy.result_type(i.dtype, j.dtype)
+    stacked = cupy.stack([j.astype(common_dtype, copy=False),
+                          i.astype(common_dtype, copy=False)])
+    order = cupy.lexsort(stacked).astype(common_dtype)
 
     indptr_inserts = i[order]
     indices_inserts = j[order]
     data_inserts = x[order]
 
     mask = cupy.ones(indptr_inserts.size, dtype='bool')
-    _unique_mask_kern(indptr_inserts, indices_inserts, order, mask,
+    # _unique_mask_kern uses type I for rows and cols; promote to common type
+    _unique_mask_kern(indptr_inserts.astype(common_dtype, copy=False),
+                      indices_inserts.astype(common_dtype, copy=False),
+                      order, mask,
                       size=indptr_inserts.size-1)
 
     return indptr_inserts[mask], indices_inserts[mask], data_inserts[mask]
 
 
 _insert_many_populate_arrays = _core.ElementwiseKernel(
-    '''raw I insert_indices, raw T insert_values, raw I insertion_indptr,
-        raw I Ap, raw I Aj, raw T Ax, raw I Bp''',
+    '''raw I insert_indices, raw T insert_values, raw P insertion_indptr,
+        raw P Ap, raw I Aj, raw T Ax, raw P Bp''',
     'raw I Bj, raw T Bx', '''
 
-        const I input_row_start = Ap[i];
-        const I input_row_end = Ap[i+1];
-        const I input_count = input_row_end - input_row_start;
+        const P input_row_start = Ap[i];
+        const P input_row_end = Ap[i+1];
+        const P input_count = input_row_end - input_row_start;
 
-        const I insert_row_start = insertion_indptr[i];
-        const I insert_row_end = insertion_indptr[i+1];
-        const I insert_count = insert_row_end - insert_row_start;
+        const P insert_row_start = insertion_indptr[i];
+        const P insert_row_end = insertion_indptr[i+1];
+        const P insert_count = insert_row_end - insert_row_start;
 
-        I input_offset = 0;
-        I insert_offset = 0;
+        P input_offset = 0;
+        P insert_offset = 0;
 
-        I output_n = Bp[i];
+        P output_n = Bp[i];
 
         I cur_existing_index = -1;
         T cur_existing_value = -1;
@@ -217,7 +223,7 @@ _insert_many_populate_arrays = _core.ElementwiseKernel(
         }
 
 
-        for(I jj = 0; jj < input_count + insert_count; jj++) {
+        for(P jj = 0; jj < input_count + insert_count; jj++) {
 
             // if we have both available, use the lowest one.
             if(input_offset < input_count &&
@@ -329,16 +335,16 @@ def _csr_sample_values(n_row, n_col,
 
 
 _csr_sample_values_kern = _core.ElementwiseKernel(
-    '''I n_row, I n_col, raw I Ap, raw I Aj, raw T Ax,
-    raw I Bi, raw I Bj, I not_found_val''',
+    '''P n_row, I n_col, raw P Ap, raw I Aj, raw T Ax,
+    raw P Bi, raw I Bj, I not_found_val''',
     'raw T Bx', '''
-    const I j = Bi[i]; // sample row
+    const P j = Bi[i]; // sample row
     const I k = Bj[i]; // sample column
-    const I row_start = Ap[j];
-    const I row_end   = Ap[j+1];
+    const P row_start = Ap[j];
+    const P row_end   = Ap[j+1];
     T x = 0;
     bool val_found = false;
-    for(I jj = row_start; jj < row_end; jj++) {
+    for(P jj = row_start; jj < row_end; jj++) {
         if (Aj[jj] == k) {
             x += Ax[jj];
             val_found = true;
