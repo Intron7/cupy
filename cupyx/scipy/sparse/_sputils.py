@@ -69,32 +69,53 @@ def get_index_dtype(arrays=(), maxval=None, check_contents=False):
     return dtype
 
 
-def get_indptr_dtype(nnz):
-    """Optimal dtype for indptr based on the number of nonzeros.
+# Supported dtypes for sparse index arrays (indptr, indices).
+SUPPORTED_INDEX_DTYPES = frozenset({
+    numpy.dtype(numpy.int32),
+    numpy.dtype(numpy.int64),
+    numpy.dtype(numpy.uint16),
+})
 
-    indptr values range from 0 to nnz.
-    cuSPARSE supports CUSPARSE_INDEX_16U for uint16,
-    so we use uint16 when nnz fits.
+
+def get_indptr_dtype(nnz):
+    """Return the smallest signed integer dtype that can hold *nnz*.
+
+    Args:
+        nnz (int): Maximum value the indptr array must represent
+            (typically the number of stored values).
+
+    Returns:
+        numpy.dtype: ``cupy.int32`` or ``cupy.int64``.
     """
-    if nnz <= numpy.iinfo(numpy.uint16).max:
-        return cupy.dtype(cupy.uint16)
-    if nnz <= cupy.iinfo(cupy.int32).max:
-        return cupy.dtype(cupy.int32)
-    return cupy.dtype(cupy.int64)
+    if nnz <= numpy.iinfo(numpy.int32).max:
+        return cupy.int32
+    return cupy.int64
 
 
 def get_indices_dtype(minor_dim):
-    """Optimal dtype for indices based on the minor axis dimension.
+    """Return the smallest integer dtype for minor-axis indices.
 
-    indices values range from 0 to minor_dim - 1.
-    cuSPARSE supports CUSPARSE_INDEX_16U for uint16 indices,
-    so we use uint16 when the minor dimension fits.
+    Args:
+        minor_dim (int): Size of the minor axis (number of columns for
+            CSR, number of rows for CSC).
+
+    Returns:
+        numpy.dtype: ``cupy.uint16``, ``cupy.int32``, or ``cupy.int64``.
     """
     if minor_dim <= numpy.iinfo(numpy.uint16).max:
-        return cupy.dtype(cupy.uint16)
-    if minor_dim <= cupy.iinfo(cupy.int32).max:
-        return cupy.dtype(cupy.int32)
-    return cupy.dtype(cupy.int64)
+        return cupy.uint16
+    if minor_dim <= numpy.iinfo(numpy.int32).max:
+        return cupy.int32
+    return cupy.int64
+
+
+def wider_index_dtype(*dtypes):
+    """Return the wider of the given index dtypes.
+
+    Uses :func:`numpy.result_type` so that, e.g.,
+    ``wider_index_dtype(cupy.uint16, cupy.int64)`` returns ``int64``.
+    """
+    return numpy.result_type(*dtypes)
 
 
 def validateaxis(axis):

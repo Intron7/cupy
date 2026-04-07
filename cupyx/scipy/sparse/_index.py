@@ -96,16 +96,16 @@ def _get_csr_submatrix_minor_axis(Ax, Aj, Ap, start, stop):
 
 
 _csr_row_index_ker = _core.ElementwiseKernel(
-    'P out_rows, raw P rows, '
-    'raw P Ap, raw I Aj, raw T Ax, raw P Bp',
-    'I Bj, T Bx',
+    'I out_rows, raw I rows, '
+    'raw I Ap, raw S Aj, raw T Ax, raw I Bp',
+    'S Bj, T Bx',
     '''
-    const P row = rows[out_rows];
+    const I row = rows[out_rows];
 
     // Look up starting offset
-    const P starting_output_offset = Bp[out_rows];
-    const P output_offset = i - starting_output_offset;
-    const P starting_input_offset = Ap[row];
+    const I starting_output_offset = Bp[out_rows];
+    const I output_offset = i - starting_output_offset;
+    const I starting_input_offset = Ap[row];
 
     Bj = Aj[starting_input_offset + output_offset];
     Bx = Ax[starting_input_offset + output_offset];
@@ -114,18 +114,20 @@ _csr_row_index_ker = _core.ElementwiseKernel(
 
 def _csr_row_index(Ax, Aj, Ap, rows):
     """Populate indices and data arrays from the given row index
+
     Args:
         Ax (cupy.ndarray): data array from input sparse matrix
         Aj (cupy.ndarray): indices array from input sparse matrix
         Ap (cupy.ndarray): indptr array from input sparse matrix
         rows (cupy.ndarray): index array of rows to populate
+
     Returns:
         Bx (cupy.ndarray): data array of output sparse matrix
         Bj (cupy.ndarray): indices array of output sparse matrix
         Bp (cupy.ndarray): indptr array for output sparse matrix
     """
-    # Ensure rows has the same dtype as Ap so the kernel type parameter P
-    # is consistent across indptr-related arguments.
+    # The kernel uses I for indptr-typed arrays (Ap, Bp, rows,
+    # out_rows) and S for indices-typed arrays (Aj, Bj).
     rows = rows.astype(Ap.dtype, copy=False)
     row_nnz = cupy.diff(Ap)
     Bp = cupy.empty(rows.size + 1, dtype=Ap.dtype)
@@ -335,16 +337,16 @@ def _csr_sample_values(n_row, n_col,
 
 
 _csr_sample_values_kern = _core.ElementwiseKernel(
-    '''P n_row, I n_col, raw P Ap, raw I Aj, raw T Ax,
-    raw P Bi, raw I Bj, I not_found_val''',
+    '''I n_row, S n_col, raw I Ap, raw S Aj, raw T Ax,
+    raw I Bi, raw S Bj, S not_found_val''',
     'raw T Bx', '''
-    const P j = Bi[i]; // sample row
-    const I k = Bj[i]; // sample column
-    const P row_start = Ap[j];
-    const P row_end   = Ap[j+1];
+    const I j = Bi[i]; // sample row (indptr-typed)
+    const S k = Bj[i]; // sample column (indices-typed)
+    const I row_start = Ap[j];
+    const I row_end   = Ap[j+1];
     T x = 0;
     bool val_found = false;
-    for(P jj = row_start; jj < row_end; jj++) {
+    for(I jj = row_start; jj < row_end; jj++) {
         if (Aj[jj] == k) {
             x += Ax[jj];
             val_found = true;

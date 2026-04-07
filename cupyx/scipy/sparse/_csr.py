@@ -169,7 +169,16 @@ class csr_matrix(_compressed._compressed_sparse_matrix):
         elif _csc.isspmatrix_csc(other):
             self.sum_duplicates()
             other.sum_duplicates()
-            if cusparse.check_availability('csrgemm') and not runtime.is_hip:
+            # Legacy csrgemm is int32-only; skip it when either matrix
+            # has non-int32 index arrays (int64, uint16, or mixed).
+            _both_int32 = (
+                self.indices.dtype == cupy.int32
+                and self.indptr.dtype == cupy.int32
+                and other.indices.dtype == cupy.int32
+                and other.indptr.dtype == cupy.int32
+            )
+            if (cusparse.check_availability('csrgemm')
+                    and not runtime.is_hip and _both_int32):
                 # trans=True is still buggy as of ROCm 4.2.0
                 return cusparse.csrgemm(self, other.T, transb=True)
             elif cusparse.check_availability('spgemm'):
@@ -544,10 +553,20 @@ class csr_matrix(_compressed._compressed_sparse_matrix):
                 'swapping dimensions is the only logical permutation.')
 
         shape = self.shape[1], self.shape[0]
-        trans = _csc.csc_matrix(
-            (self.data, self.indices, self.indptr), shape=shape, copy=copy)
-        trans.has_canonical_format = self.has_canonical_format
-        return trans
+        if copy:
+            data = self.data.copy()
+            indices = self.indices.copy()
+            indptr = self.indptr.copy()
+        else:
+            data, indices, indptr = self.data, self.indices, self.indptr
+        csc_cls = _csc.csc_array if self._allow_mixed_index_dtypes \
+            else _csc.csc_matrix
+        return csc_cls._from_parts(
+            data, indices, indptr, shape,
+            has_canonical_format=getattr(
+                self, '_has_canonical_format', None),
+            has_sorted_indices=getattr(
+                self, '_has_sorted_indices', None))
 
     def getrow(self, i):
         """Returns a copy of row i of the matrix, as a (1 x n)
@@ -1281,3 +1300,25 @@ def _cupy_csr_diagonal():
         'cupyx_scipy_sparse_csr_diagonal',
         preamble=_FIND_INDEX_HOLDING_COL_IN_ROW_
     )
+
+
+class csr_array(csr_matrix):
+    """Compressed Sparse Row array with mixed index dtype support.
+
+    Unlike :class:`csr_matrix`, ``csr_array`` allows ``indptr`` and
+    ``indices`` to have different dtypes (e.g. int64 indptr with
+    uint16 indices).  This saves memory when the number of stored
+    values exceeds 2^31 but the minor-axis dimension is small.
+
+    **Experimental** -- API may change.
+
+    Instantiation is identical to :class:`csr_matrix`.
+
+    .. seealso:: :class:`scipy.sparse.csr_array`
+    """
+
+    _allow_mixed_index_dtypes = True
+
+
+def isspmatrix_csr_array(x):
+    return isinstance(x, csr_array)

@@ -352,10 +352,21 @@ class csc_matrix(_compressed._compressed_sparse_matrix):
                 'swapping dimensions is the only logical permutation.')
 
         shape = self.shape[1], self.shape[0]
-        trans = cupyx.scipy.sparse.csr_matrix(
-            (self.data, self.indices, self.indptr), shape=shape, copy=copy)
-        trans.has_canonical_format = self.has_canonical_format
-        return trans
+        if copy:
+            data = self.data.copy()
+            indices = self.indices.copy()
+            indptr = self.indptr.copy()
+        else:
+            data, indices, indptr = self.data, self.indices, self.indptr
+        csr_cls = cupyx.scipy.sparse.csr_array \
+            if self._allow_mixed_index_dtypes \
+            else cupyx.scipy.sparse.csr_matrix
+        return csr_cls._from_parts(
+            data, indices, indptr, shape,
+            has_canonical_format=getattr(
+                self, '_has_canonical_format', None),
+            has_sorted_indices=getattr(
+                self, '_has_sorted_indices', None))
 
     def getrow(self, i):
         """Returns a copy of row i of the matrix, as a (1 x n)
@@ -413,3 +424,25 @@ def isspmatrix_csc(x):
 
     """
     return isinstance(x, csc_matrix)
+
+
+class csc_array(csc_matrix):
+    """Compressed Sparse Column array with mixed index dtype support.
+
+    Unlike :class:`csc_matrix`, ``csc_array`` allows ``indptr`` and
+    ``indices`` to have different dtypes (e.g. int64 indptr with
+    uint16 indices).  This saves memory when the number of stored
+    values exceeds 2^31 but the minor-axis dimension is small.
+
+    **Experimental** -- API may change.
+
+    Instantiation is identical to :class:`csc_matrix`.
+
+    .. seealso:: :class:`scipy.sparse.csc_array`
+    """
+
+    _allow_mixed_index_dtypes = True
+
+
+def isspmatrix_csc_array(x):
+    return isinstance(x, csc_array)

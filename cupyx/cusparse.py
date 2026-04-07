@@ -56,6 +56,25 @@ def _cast_common_type(*xs):
             for x in xs]
 
 
+def _upcast_for_cusparse(a):
+    """Return *a* with uniform index dtype (wider of indptr/indices).
+
+    cuSPARSE does not support mixed index sizes for CSR/CSC
+    descriptors (pre-CTK 13.3).  This creates a temporary view or
+    copy of the narrower index array cast to the wider type.
+    """
+    wider = _numpy.result_type(a.indptr.dtype, a.indices.dtype)
+    if a.indptr.dtype == wider and a.indices.dtype == wider:
+        return a
+    return a.__class__._from_parts(
+        a.data,
+        a.indices.astype(wider, copy=False),
+        a.indptr.astype(wider, copy=False),
+        a.shape,
+        has_canonical_format=getattr(a, '_has_canonical_format', None),
+        has_sorted_indices=getattr(a, '_has_sorted_indices', None))
+
+
 def _check_int32_indices(a, func_name):
     """Raise ValueError if *a* has non-int32 indices."""
     if a.indices.dtype != _cupy.int32 or a.indptr.dtype != _cupy.int32:
@@ -1278,6 +1297,12 @@ def csr2coo(x, data, indices):
         _cusparse.xcsr2coo(
             handle, x.indptr.data.ptr, nnz, m, row.data.ptr,
             _cusparse.CUSPARSE_INDEX_BASE_ZERO)
+    # COO requires uniform index dtype for row and col.
+    # When CSR has mixed types, widen to the wider dtype.
+    if row.dtype != indices.dtype:
+        wider = _numpy.result_type(row.dtype, indices.dtype)
+        row = row.astype(wider, copy=False)
+        indices = indices.astype(wider, copy=False)
     A = cupyx.scipy.sparse.coo_matrix._from_parts(
         data, row, indices, x.shape)
     A.has_canonical_format = False
@@ -1773,7 +1798,8 @@ def spmv(a, x, y=None, alpha=1, beta=0, transa=False):
         y.fill(0)
         return y
 
-    desc_a = SpMatDescriptor.create(a)
+    a_uni = _upcast_for_cusparse(a)
+    desc_a = SpMatDescriptor.create(a_uni)
     desc_x = DnVecDescriptor.create(x)
     desc_y = DnVecDescriptor.create(y)
 
@@ -1847,7 +1873,8 @@ def spmm(a, b, c=None, alpha=1, beta=0, transa=False, transb=False):
         c.fill(0)
         return c
 
-    desc_a = SpMatDescriptor.create(a)
+    a_uni = _upcast_for_cusparse(a)
+    desc_a = SpMatDescriptor.create(a_uni)
     desc_b = DnMatDescriptor.create(b)
     desc_c = DnMatDescriptor.create(c)
 
@@ -2183,7 +2210,8 @@ def sparseToDense(x, out=None):
         assert out.flags.f_contiguous
         assert out.dtype == dtype
 
-    desc_x = SpMatDescriptor.create(x)
+    x_uni = _upcast_for_cusparse(x)
+    desc_x = SpMatDescriptor.create(x_uni)
     desc_out = DnMatDescriptor.create(out)
     algo = _cusparse.CUSPARSE_SPARSETODENSE_ALG_DEFAULT
     handle = _device.get_cusparse_handle()
@@ -2449,13 +2477,17 @@ def spgemm(a, b, alpha=1):
     if not isinstance(b, cupyx.scipy.sparse.csr_matrix):
         raise TypeError('unsupported type (actual: {})'.format(type(b)))
 
-    # TODO(cuSPARSE): remove fallback once CUDA 13.0 int64 SpGEMM verified.
-    # Non-int32 inputs (int64 indptr/indices, uint16 indices, mixed):
-    # upcast to int64 for cuSPARSE or use pure-CuPy fallback.
-    _needs_int64 = (
-        a.indices.dtype != _cupy.int32 or a.indptr.dtype != _cupy.int32
-        or b.indices.dtype != _cupy.int32 or b.indptr.dtype != _cupy.int32)
-    if _needs_int64:
+    # Upcast mixed index types to uniform before cuSPARSE.
+    a = _upcast_for_cusparse(a)
+    b = _upcast_for_cusparse(b)
+
+    # TODO(cuSPARSE): remove pure-CuPy fallback when all supported CUDA
+    # versions have native int64 SpGEMM.
+    # cuSPARSE 12.7.9 ships with both CUDA 12.7 and 13.0 but only
+    # CUDA 13.0+ supports int64 SpGEMM (CUSPARSE-2365), so we check
+    # the CUDA runtime version rather than check_availability().
+    # Mixed int32/int64 inputs: upcast to int64, prefer cuSPARSE.
+    if a.indices.dtype == _cupy.int64 or b.indices.dtype == _cupy.int64:
         if a.shape[1] != b.shape[0]:
             raise ValueError('mismatched shape')
         if check_availability('spgemm_int64'):
